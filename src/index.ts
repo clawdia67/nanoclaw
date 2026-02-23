@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DEFAULT_MODEL,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -17,6 +18,7 @@ import {
 } from './container-runner.js';
 import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
 import {
+  deleteSession,
   getAllChats,
   getAllRegisteredGroups,
   getAllSessions,
@@ -47,6 +49,30 @@ let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
+
+// Model prefix shortcuts for switching Claude models from chat
+const MODEL_PREFIXES: Record<string, string> = {
+  'hh': 'claude-haiku-4-5',
+  'oo': 'claude-opus-4-6',
+  'ss': 'claude-sonnet-4-6',
+};
+
+/**
+ * Parse model prefix from prompt. Returns { model, prompt } where model
+ * is undefined if no prefix was found.
+ *
+ * Supported prefixes: hh (haiku), oo (opus), ss (sonnet)
+ * Example: "oo make a website" → { model: "claude-opus-4-...", prompt: "make a website" }
+ */
+function parseModelPrefix(prompt: string): { model?: string; prompt: string } {
+  const match = prompt.match(/^(hh|oo|ss)\s+/i);
+  if (match) {
+    const prefix = match[1].toLowerCase();
+    const model = MODEL_PREFIXES[prefix];
+    return { model, prompt: prompt.slice(match[0].length) };
+  }
+  return { prompt };
+}
 
 let whatsapp: WhatsAppChannel;
 const channels: Channel[] = [];
@@ -145,12 +171,37 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
+  // Handle "clear" command — resets session context
+  const lastMsgContent = missedMessages[missedMessages.length - 1].content.trim();
+  if (lastMsgContent.toLowerCase() === 'clear') {
+    logger.info({ group: group.name }, 'Clear command received, resetting session');
+    // Clear session from memory and DB
+    delete sessions[group.folder];
+    deleteSession(group.folder);
+    // Close any active container
+    queue.closeStdin(chatJid);
+    // Advance cursor so we don't reprocess
+    lastAgentTimestamp[chatJid] = missedMessages[missedMessages.length - 1].timestamp;
+    saveState();
+    // Send confirmation
+    await channel.sendMessage(chatJid, '🧹 Context cleared. Starting fresh.');
+    return true;
+  }
+
   // For non-main groups, check if trigger is required and present
   if (!isMainGroup && group.requiresTrigger !== false) {
     const hasTrigger = missedMessages.some((m) =>
       TRIGGER_PATTERN.test(m.content.trim()),
     );
     if (!hasTrigger) return true;
+  }
+
+  // Check last message for model prefix (e.g., "oo make a website" → opus)
+  const lastMsg = missedMessages[missedMessages.length - 1];
+  const { model, prompt: strippedContent } = parseModelPrefix(lastMsg.content);
+  if (model) {
+    lastMsg.content = strippedContent;
+    logger.info({ group: group.name, model }, 'Model override from prefix');
   }
 
   const prompt = formatMessages(missedMessages);
@@ -182,7 +233,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, prompt, chatJid, model, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
@@ -230,6 +281,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
+  model?: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
@@ -281,6 +333,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        model: model || DEFAULT_MODEL,
       },
       (proc, containerName) => queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
@@ -370,6 +423,20 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
+
+          // Check if the last message has a model prefix — if so, we need to
+          // restart the container with the new model (context is preserved via sessionId)
+          const lastMsg = messagesToSend[messagesToSend.length - 1];
+          const { model: requestedModel } = parseModelPrefix(lastMsg.content);
+          if (requestedModel && queue.isActive(chatJid)) {
+            // There's an active container but user wants a different model
+            logger.info({ chatJid, model: requestedModel }, 'Model switch requested, restarting container');
+            queue.closeStdin(chatJid);
+            // Don't pipe — let processGroupMessages handle it with the new model
+            queue.enqueueMessageCheck(chatJid);
+            continue;
+          }
+
           const formatted = formatMessages(messagesToSend);
 
           if (queue.sendMessage(chatJid, formatted)) {

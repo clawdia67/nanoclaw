@@ -38,14 +38,38 @@ When working as a sub-agent or teammate, only use `send_message` if instructed t
 
 Files you create are saved in `/workspace/group/`. Use this for notes, research, or anything that should persist.
 
-## Memory
+## Memory System
 
-The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
+**READ SOUL.md FIRST** — it defines who you are.
 
-When you learn something important:
-- Create files for structured data (e.g., `customers.md`, `preferences.md`)
-- Split files larger than 500 lines into folders
-- Keep an index in your memory for the files you create
+### On Every Session Start:
+1. Read `/workspace/global/SOUL.md` — your identity
+2. Read `/workspace/global/memory/tasks.md` — check for interrupted work
+3. Load other memory files as needed based on context
+
+### Memory Files
+
+| File | Purpose | When to Update |
+|------|---------|----------------|
+| `SOUL.md` | Your identity, voice, boundaries | Rarely (tell user if you do) |
+| `memory/tasks.md` | Active work, crash recovery | Before/after significant tasks |
+| `memory/lessons.md` | Mistakes to avoid, mandatory rules | When you learn something the hard way |
+| `memory/people.md` | Relationships, preferences | When you learn about someone |
+| `memory/projects.md` | Technical context, system details | When working on projects |
+| `memory/daily/YYYY-MM-DD.md` | Daily conversation logs | End of significant conversations |
+
+### Memory Extraction
+
+At the end of conversations with significant learnings, update the relevant memory files:
+- New user preference → `memory/people.md`
+- Made a mistake → `memory/lessons.md`
+- Learned about a project → `memory/projects.md`
+- Started/completed work → `memory/tasks.md`
+
+### What NOT to Memorize
+- Trivial/obvious information
+- One-time facts unlikely to be relevant again
+- Sensitive information the user wouldn't want persisted
 
 ## Message Formatting
 

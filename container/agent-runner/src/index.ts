@@ -28,6 +28,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  model?: string;
 }
 
 interface ContainerOutput {
@@ -421,6 +422,7 @@ async function runQuery(
       additionalDirectories: extraDirs.length > 0 ? extraDirs : undefined,
       resume: sessionId,
       resumeSessionAt: resumeAt,
+      model: containerInput.model,
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
@@ -513,6 +515,11 @@ async function main(): Promise<void> {
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   for (const [key, value] of Object.entries(containerInput.secrets || {})) {
     sdkEnv[key] = value;
+  }
+  // Set model via env var as well (SDK may prefer this over options.model)
+  if (containerInput.model) {
+    sdkEnv['ANTHROPIC_MODEL'] = containerInput.model;
+    log(`Setting ANTHROPIC_MODEL=${containerInput.model}`);
   }
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));

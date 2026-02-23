@@ -34,14 +34,43 @@ Text inside `<internal>` tags is logged but not sent to the user. If you've alre
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
 
-## Memory
+## Memory System
 
-The `conversations/` folder contains searchable history of past conversations. Use this to recall context from previous sessions.
+**READ SOUL.md FIRST** — it defines who you are.
 
-When you learn something important:
-- Create files for structured data (e.g., `customers.md`, `preferences.md`)
-- Split files larger than 500 lines into folders
-- Keep an index in your memory for the files you create
+### On Every Session Start:
+1. Read `/workspace/project/groups/global/SOUL.md` — your identity
+2. Read `/workspace/project/groups/global/memory/tasks.md` — check for interrupted work
+3. Load other memory files as needed based on context
+
+### Memory Locations
+
+**Global memory** (read-write, applies to all groups):
+- `/workspace/project/groups/global/SOUL.md` — identity
+- `/workspace/project/groups/global/memory/tasks.md` — active work
+- `/workspace/project/groups/global/memory/lessons.md` — mistakes to avoid
+- `/workspace/project/groups/global/memory/people.md` — relationships
+- `/workspace/project/groups/global/memory/projects.md` — technical context
+
+**Local memory** (this group only):
+- `/workspace/group/memory/` — group-specific memories
+- `/workspace/group/memory/daily/` — daily logs
+
+### Memory Extraction
+
+At the end of conversations with significant learnings, update the relevant memory files:
+- New user preference → `global/memory/people.md`
+- Made a mistake → `global/memory/lessons.md`
+- Learned about a project → `global/memory/projects.md`
+- Started/completed work → `global/memory/tasks.md`
+- Group-specific context → `local/memory/`
+
+### What NOT to Memorize
+- Trivial/obvious information
+- One-time facts unlikely to be relevant again
+- Sensitive information the user wouldn't want persisted
+
+The `conversations/` folder contains searchable history of past conversations for additional context.
 
 ## WhatsApp Formatting (and other messaging apps)
 
@@ -201,7 +230,14 @@ Read `/workspace/project/data/registered_groups.json` and format it nicely.
 
 ## Global Memory
 
-You can read and write to `/workspace/project/groups/global/CLAUDE.md` for facts that should apply to all groups. Only update global memory when explicitly asked to "remember this globally" or similar.
+Global memory lives in `/workspace/project/groups/global/`:
+- `SOUL.md` — your identity (rarely change)
+- `memory/tasks.md` — active work across all groups
+- `memory/lessons.md` — behavioral patterns
+- `memory/people.md` — user relationships
+- `memory/projects.md` — technical context
+
+Update global memory when learnings apply across all groups. For group-specific context, use local memory instead.
 
 ---
 

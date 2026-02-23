@@ -35,6 +35,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   secrets?: Record<string, string>;
+  model?: string;
 }
 
 export interface ContainerOutput {
@@ -115,23 +116,23 @@ function buildVolumeMounts(
         // Load CLAUDE.md from additional mounted directories
         // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
         CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-        // Enable Claude's memory feature (persists user preferences between sessions)
+        // Disable Claude's built-in auto-memory - we use explicit memory extraction instead
+        // Our memory system: groups/*/memory/ with structured thematic files
         // https://code.claude.com/docs/en/memory#manage-auto-memory
-        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
       },
     }, null, 2) + '\n');
   }
 
   // Sync skills from container/skills/ into each group's .claude/skills/
+  // Remove destination first to avoid permission issues with read-only source files
   const skillsSrc = path.join(process.cwd(), 'container', 'skills');
   const skillsDst = path.join(groupSessionsDir, 'skills');
   if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
+    if (fs.existsSync(skillsDst)) {
+      fs.rmSync(skillsDst, { recursive: true, force: true });
     }
+    fs.cpSync(skillsSrc, skillsDst, { recursive: true });
   }
   mounts.push({
     hostPath: groupSessionsDir,
@@ -271,6 +272,7 @@ export async function runContainerAgent(
 
     // Pass secrets via stdin (never written to disk or mounted as files)
     input.secrets = readSecrets();
+    logger.info({ model: input.model, groupFolder: input.groupFolder }, 'Sending input to container');
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();
     // Remove secrets from input so they don't appear in logs

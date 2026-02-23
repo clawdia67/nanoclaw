@@ -67,3 +67,7 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// Default model for agent queries (when no prefix like hh/oo/ss is used)
+export const DEFAULT_MODEL =
+  process.env.DEFAULT_MODEL || 'claude-sonnet-4-6';
