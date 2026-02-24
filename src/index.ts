@@ -16,6 +16,7 @@ import {
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
+import { writeInfrastructureSnapshot } from './infrastructure.js';
 import { cleanupOrphans, ensureContainerRuntimeRunning } from './container-runtime.js';
 import {
   deleteSession,
@@ -40,11 +41,13 @@ import { findChannel, formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { startHeartbeat } from './heartbeat.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
 
 let lastTimestamp = '';
+let lastMessageReceivedAt: string | null = null;
 let sessions: Record<string, string> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
@@ -274,6 +277,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     return false;
   }
 
+  // Auto-recovery: agent completed successfully but never sent any text.
+  // This typically means the session is corrupted (SDK resumes but produces
+  // empty results). Clear the session and roll back so the next cycle
+  // retries with a fresh session. Only do this when resuming an existing
+  // session — a fresh session with no output is a different (unlikely) bug.
+  if (!outputSentToUser && sessions[group.folder]) {
+    logger.warn({ group: group.name, sessionId: sessions[group.folder] }, 'Agent produced no output, clearing stale session for auto-retry');
+    delete sessions[group.folder];
+    deleteSession(group.folder);
+    lastAgentTimestamp[chatJid] = previousCursor;
+    saveState();
+    return false;
+  }
+
   return true;
 }
 
@@ -302,6 +319,9 @@ async function runAgent(
       next_run: t.next_run,
     })),
   );
+
+  // Update infrastructure snapshot (nginx ports, tunnels) for all groups
+  writeInfrastructureSnapshot(group.folder);
 
   // Update available groups snapshot (main group only can see all groups)
   const availableGroups = getAvailableGroups();
@@ -374,6 +394,7 @@ async function startMessageLoop(): Promise<void> {
       const { messages, newTimestamp } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
 
       if (messages.length > 0) {
+        lastMessageReceivedAt = new Date().toISOString();
         logger.info({ count: messages.length }, 'New messages');
 
         // Advance the "seen" cursor for all messages immediately
@@ -546,6 +567,10 @@ async function main(): Promise<void> {
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
+  startHeartbeat({
+    channels: () => channels,
+    getLastMessageTime: () => lastMessageReceivedAt,
+  });
   startMessageLoop().catch((err) => {
     logger.fatal({ err }, 'Message loop crashed unexpectedly');
     process.exit(1);

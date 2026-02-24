@@ -11,11 +11,11 @@ Use this skill to extract memories from conversations and manage the memory syst
 
 | File | Purpose | Location |
 |------|---------|----------|
-| `SOUL.md` | Identity and personality | `/workspace/project/groups/global/SOUL.md` |
-| `tasks.md` | Active work, crash recovery | `/workspace/project/groups/global/memory/tasks.md` |
-| `lessons.md` | Mistakes to avoid | `/workspace/project/groups/global/memory/lessons.md` |
-| `people.md` | Relationships, preferences | `/workspace/project/groups/global/memory/people.md` |
-| `projects.md` | Technical context | `/workspace/project/groups/global/memory/projects.md` |
+| `SOUL.md` | Identity and personality | `/workspace/group/SOUL.md` |
+| `tasks.md` | Active work, crash recovery | `/workspace/group/memory/tasks.md` |
+| `lessons.md` | Mistakes to avoid | `/workspace/group/memory/lessons.md` |
+| `people.md` | Relationships, preferences | `/workspace/group/memory/people.md` |
+| `projects.md` | Technical context | `/workspace/group/memory/projects.md` |
 | `daily/*.md` | Daily conversation logs | `/workspace/group/memory/daily/` |
 
 ## Extract Memories
@@ -39,10 +39,10 @@ For each category with new learnings:
 
 ```bash
 # Read current file
-cat /workspace/project/groups/global/memory/lessons.md
+cat /workspace/group/memory/lessons.md
 
 # Append new content (example)
-cat >> /workspace/project/groups/global/memory/lessons.md << 'EOF'
+cat >> /workspace/group/memory/lessons.md << 'EOF'
 
 ### 2026-02-23
 **[Short title]**
@@ -57,7 +57,7 @@ If work is in progress or was completed:
 
 ```bash
 # Read current tasks
-cat /workspace/project/groups/global/memory/tasks.md
+cat /workspace/group/memory/tasks.md
 
 # Update the relevant section
 ```
@@ -98,8 +98,8 @@ To see current memory state:
 
 ```bash
 # List all memory files
-find /workspace/project/groups/global/memory -name "*.md" -exec echo "=== {} ===" \; -exec head -20 {} \;
+find /workspace/group/memory -name "*.md" -exec echo "=== {} ===" \; -exec head -20 {} \;
 
 # View specific file
-cat /workspace/project/groups/global/memory/lessons.md
+cat /workspace/group/memory/lessons.md
 ```

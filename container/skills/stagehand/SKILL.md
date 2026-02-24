@@ -19,7 +19,7 @@ Stagehand is a browser automation framework that controls web browsers with **na
 
 ## ⚠️ CRITICAL: Always Use Local Browser
 
-**MANDATORY:** Always use `env: "LOCAL"` — we do NOT have Browserbase. Never use `env: "LOCAL"`.
+**MANDATORY:** Always use `env: "LOCAL"` — we do NOT have Browserbase. Never use `env: "BROWSERBASE"`.
 
 ```typescript
 const stagehand = new Stagehand({
@@ -28,14 +28,34 @@ const stagehand = new Stagehand({
 });
 ```
 
-This uses the local Chrome browser on the machine. Browserbase is a cloud service we don't use.
+## ⚠️ CRITICAL: Persistent Sessions for Authenticated Sites
 
-## Installation
+**If the task requires logging into a website, ALWAYS use a persistent browser profile** so credentials are saved and you don't have to log in again next time.
 
-Stagehand is already installed locally in the workspace. All commands should be run from the workspace directory:
+The group folder at `/workspace/group/` is persisted between container runs. Store the browser profile there:
 
-```bash
-cd ~/.openclaw/workspace
+```typescript
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  model: "google/gemini-3-flash-preview",
+  localBrowserLaunchOptions: {
+    userDataDir: "/workspace/group/browser-profile"  // persisted on host
+  }
+});
+```
+
+**First run:** Stagehand logs in, saves cookies/session to `/workspace/group/browser-profile/`.
+**All future runs:** Browser opens already authenticated — no login needed.
+
+Use a site-specific subdirectory when managing multiple accounts:
+
+```typescript
+localBrowserLaunchOptions: {
+  userDataDir: "/workspace/group/browser-profile/github"   // GitHub session
+}
+localBrowserLaunchOptions: {
+  userDataDir: "/workspace/group/browser-profile/twitter"  // Twitter session
+}
 ```
 
 ## Core Concepts
@@ -49,16 +69,14 @@ Stagehand provides four main primitives:
 | `observe()` | Discover available actions             | Low — page analysis        |
 | `agent()`   | Automate entire workflows autonomously | High — full autonomy       |
 
-## Environment Variables
+## Installation
 
-Set these in your `.env` file or export them:
+Scripts should be written to `/workspace/group/` and run from there:
 
 ```bash
-export BROWSERBASE_API_KEY="your_browserbase_key"
-export BROWSERBASE_PROJECT_ID="your_project_id"
-export OPENAI_API_KEY="your_openai_key"
-export ANTHROPIC_API_KEY="your_anthropic_key"
-export GOOGLE_GENERATIVE_AI_API_KEY="your_google_key"
+cd /workspace/group
+npm init -y
+npm install @browserbasehq/stagehand zod
 ```
 
 ## Quick Start Examples
@@ -69,24 +87,21 @@ export GOOGLE_GENERATIVE_AI_API_KEY="your_google_key"
 import { Stagehand } from "@browserbasehq/stagehand";
 
 async function basicAutomation() {
-  const stagehand = new Stagehand({ 
+  const stagehand = new Stagehand({
     env: "LOCAL",
-    model: "google/gemini-3-flash-preview" // Fast and cost-effective
+    model: "google/gemini-3-flash-preview"
   });
-  
+
   await stagehand.init();
   const page = stagehand.context.pages()[0];
-  
-  // Navigate to a page
+
   await page.goto("https://example.com");
-  
-  // Perform actions with natural language
+
   await stagehand.act("click the login button");
   await stagehand.act("type 'username' into the email field");
   await stagehand.act("type 'password' into the password field");
   await stagehand.act("click the submit button");
-  
-  // Extract data
+
   const userInfo = await stagehand.extract(
     "extract the user profile information",
     z.object({
@@ -95,9 +110,50 @@ async function basicAutomation() {
       lastLogin: z.string()
     })
   );
-  
+
   await stagehand.close();
   return userInfo;
+}
+```
+
+### Authenticated Site (Persistent Session)
+
+```typescript
+import { Stagehand } from "@browserbasehq/stagehand";
+
+async function automateWithAuth(siteName: string, loginUrl: string) {
+  const stagehand = new Stagehand({
+    env: "LOCAL",
+    model: "google/gemini-3-flash-preview",
+    localBrowserLaunchOptions: {
+      userDataDir: `/workspace/group/browser-profile/${siteName}`
+    }
+  });
+
+  await stagehand.init();
+  const page = stagehand.context.pages()[0];
+  await page.goto(loginUrl);
+
+  // Check if already logged in
+  const isLoggedIn = await stagehand.extract(
+    "is the user currently logged in? look for user avatar, logout button, or dashboard",
+    z.object({ loggedIn: z.boolean() })
+  );
+
+  if (!isLoggedIn.loggedIn) {
+    // First time — log in (credentials saved automatically to userDataDir)
+    await stagehand.act("type %username% into the email field", {
+      variables: { username: process.env.LOGIN_USERNAME }
+    });
+    await stagehand.act("type %password% into the password field", {
+      variables: { password: process.env.LOGIN_PASSWORD }
+    });
+    await stagehand.act("click the login/submit button");
+    await page.waitForNavigation();
+  }
+
+  // Now authenticated — do the actual task
+  return stagehand;
 }
 ```
 
@@ -107,16 +163,15 @@ async function basicAutomation() {
 import { z } from "zod/v3";
 
 async function scrapeProductData(url: string) {
-  const stagehand = new Stagehand({ 
+  const stagehand = new Stagehand({
     env: "LOCAL",
     model: "google/gemini-3-flash-preview"
   });
-  
+
   await stagehand.init();
   const page = stagehand.context.pages()[0];
   await page.goto(url);
-  
-  // Extract structured product data
+
   const products = await stagehand.extract(
     "extract all product listings",
     z.array(z.object({
@@ -127,7 +182,7 @@ async function scrapeProductData(url: string) {
       link: z.string().url().describe("Product page URL")
     }))
   );
-  
+
   await stagehand.close();
   return products;
 }
@@ -136,19 +191,19 @@ async function scrapeProductData(url: string) {
 ### Autonomous Agent Workflow
 
 ```typescript
-async function autonomousBooking() {
-  const stagehand = new Stagehand({ 
+async function autonomousTask() {
+  const stagehand = new Stagehand({
     env: "LOCAL",
-    experimental: true // Required for advanced agent features
+    experimental: true
   });
-  
+
   await stagehand.init();
-  
+
   const agent = stagehand.agent({
-    mode: "hybrid", // Combines coordinate and DOM-based actions
+    mode: "hybrid",
     model: "google/gemini-3-flash-preview"
   });
-  
+
   const result = await agent.execute({
     instruction: "Go to booking.com, search for hotels in Paris for next weekend, filter by 4-star rating, and find the cheapest option",
     maxSteps: 25,
@@ -159,7 +214,7 @@ async function autonomousBooking() {
       bookingUrl: z.string()
     })
   });
-  
+
   await stagehand.close();
   return result.output;
 }
@@ -169,43 +224,34 @@ async function autonomousBooking() {
 
 ```typescript
 async function fillComplexForm(formData: any) {
-  const stagehand = new Stagehand({ 
+  const stagehand = new Stagehand({
     env: "LOCAL",
     model: "anthropic/claude-sonnet-4-20250514"
   });
-  
+
   await stagehand.init();
   const page = stagehand.context.pages()[0];
   await page.goto("https://complex-form.example.com");
-  
-  // Observe form structure first
+
   const formFields = await stagehand.observe("find all form input fields");
   console.log("Available form fields:", formFields);
-  
-  // Fill form step by step with error handling
+
   try {
     await stagehand.act("fill the first name field with '%firstName%'", {
       variables: { firstName: formData.firstName }
     });
-    
     await stagehand.act("fill the last name field with '%lastName%'", {
       variables: { lastName: formData.lastName }
     });
-    
     await stagehand.act("select '%country%' from the country dropdown", {
       variables: { country: formData.country }
     });
-    
-    // Wait for dynamic content to load
     await stagehand.act("wait for the address fields to appear");
-    
     await stagehand.act("fill the address field with '%address%'", {
       variables: { address: formData.address }
     });
-    
-    // Submit and extract confirmation
     await stagehand.act("click the submit button");
-    
+
     const confirmation = await stagehand.extract(
       "extract the confirmation message",
       z.object({
@@ -213,10 +259,10 @@ async function fillComplexForm(formData: any) {
         confirmationId: z.string().optional()
       })
     );
-    
+
     await stagehand.close();
     return confirmation;
-    
+
   } catch (error) {
     await stagehand.close();
     throw error;
@@ -240,13 +286,11 @@ const agent = stagehand.agent({
 await agent.execute({
   instruction: "Navigate to the dashboard, click the export button, and download the CSV file",
   maxSteps: 15,
-  highlightCursor: true // Visual debugging
+  highlightCursor: true
 });
 ```
 
 ### Streaming Agent Responses
-
-For real-time feedback:
 
 ```typescript
 const agent = stagehand.agent({
@@ -260,7 +304,6 @@ const streamResult = await agent.execute({
   maxSteps: 30
 });
 
-// Stream progress updates
 for await (const delta of streamResult.textStream) {
   console.log("Agent progress:", delta);
 }
@@ -271,17 +314,16 @@ const finalResult = await streamResult.result;
 ### Cost Optimization
 
 ```typescript
-// Use caching for repeated actions
 const stagehand = new Stagehand({
   env: "LOCAL",
-  model: "google/gemini-3-flash-preview", // Cheapest, fastest option
-  cacheDir: "stagehand-cache" // Cache actions to avoid repeated LLM calls
+  model: "google/gemini-3-flash-preview",
+  cacheDir: "/workspace/group/stagehand-cache"
 });
 
 // Observe once, then act multiple times without LLM calls
 const buttons = await stagehand.observe("find all action buttons");
 for (const button of buttons) {
-  await stagehand.act(button); // No LLM inference needed
+  await stagehand.act(button);
 }
 ```
 
@@ -290,38 +332,33 @@ for (const button of buttons) {
 ```typescript
 async function robustAutomation(url: string, maxRetries = 3) {
   let attempt = 0;
-  
+
   while (attempt < maxRetries) {
-    const stagehand = new Stagehand({ 
+    const stagehand = new Stagehand({
       env: "LOCAL",
-      verbose: 2, // Enable debug logging
+      verbose: 2,
       model: "google/gemini-3-flash-preview"
     });
-    
+
     try {
       await stagehand.init();
       const page = stagehand.context.pages()[0];
-      
       await page.goto(url, { waitUntil: 'domcontentloaded' });
-      
-      // Wait for dynamic content
       await stagehand.act("wait for the page to fully load");
-      
-      // Your automation logic here
+
       const result = await stagehand.extract("extract page data");
-      
+
       await stagehand.close();
       return result;
-      
+
     } catch (error) {
       console.error(`Attempt ${attempt + 1} failed:`, error.message);
       await stagehand?.close();
-      
+
       if (attempt === maxRetries - 1) {
         throw new Error(`Failed after ${maxRetries} attempts: ${error.message}`);
       }
-      
-      // Exponential backoff
+
       await new Promise(resolve => setTimeout(resolve, Math.pow(2, attempt) * 1000));
       attempt++;
     }
@@ -369,87 +406,36 @@ const [table] = await stagehand.observe("find the data table");
 const data = await stagehand.extract({
   instruction: "extract all rows from the table",
   schema: DataSchema,
-  selector: table.selector // Targets specific element
+  selector: table.selector
 });
 ```
 
 ## Command Line Usage
 
-Create automation scripts in the workspace:
-
 ```bash
-cd ~/.openclaw/workspace
+cd /workspace/group
 
 # Create a new automation script
-cat > scrape_example.js << 'EOF'
+cat > scrape_example.mjs << 'EOF'
 import { Stagehand } from "@browserbasehq/stagehand";
 import { z } from "zod/v3";
 
-async function scrapeWebsite() {
-  const stagehand = new Stagehand({ 
-    env: "LOCAL",
-    model: "google/gemini-3-flash-preview"
-  });
-  
-  await stagehand.init();
-  const page = stagehand.context.pages()[0];
-  
-  await page.goto(process.argv[2] || "https://example.com");
-  
-  // Your automation logic here
-  const title = await stagehand.extract("extract the page title", z.string());
-  console.log("Page title:", title);
-  
-  await stagehand.close();
-}
+const stagehand = new Stagehand({
+  env: "LOCAL",
+  model: "google/gemini-3-flash-preview"
+});
 
-scrapeWebsite().catch(console.error);
+await stagehand.init();
+const page = stagehand.context.pages()[0];
+await page.goto(process.argv[2] || "https://example.com");
+
+const title = await stagehand.extract("extract the page title", z.string());
+console.log("Page title:", title);
+
+await stagehand.close();
 EOF
 
-# Run the script
-node scrape_example.js https://news.ycombinator.com
-```
-
-## Integration with OpenClaw
-
-Use Stagehand in OpenClaw workflows:
-
-```typescript
-// In an OpenClaw skill or agent
-async function automateTask(instruction: string, targetUrl?: string) {
-  const { Stagehand } = await import("@browserbasehq/stagehand");
-  
-  const stagehand = new Stagehand({
-    env: "LOCAL",
-    model: "google/gemini-3-flash-preview"
-  });
-  
-  try {
-    await stagehand.init();
-    
-    if (targetUrl) {
-      const page = stagehand.context.pages()[0];
-      await page.goto(targetUrl);
-    }
-    
-    // Use agent for complex instructions
-    const agent = stagehand.agent();
-    const result = await agent.execute({
-      instruction: instruction,
-      maxSteps: 20
-    });
-    
-    return result;
-    
-  } finally {
-    await stagehand.close();
-  }
-}
-
-// Usage in OpenClaw
-// "Use stagehand to automate booking a hotel room on booking.com"
-// "Extract product prices from amazon.com search results"
-// "Fill out the contact form on company website with my details"
+node scrape_example.mjs https://news.ycombinator.com
 ```
 
 ## Model Recommendations
@@ -459,26 +445,25 @@ async function automateTask(instruction: string, targetUrl?: string) {
 | Fast scraping | `google/gemini-3-flash-preview` | Fastest, cheapest |
 | Complex forms | `anthropic/claude-sonnet-4-20250514` | Best reasoning |
 | Visual automation | `google/gemini-2.5-computer-use-preview-10-2025` | CUA support |
-| Cost-sensitive | `google/gemini-3-flash-preview` | Latest flash, cost-effective |
 | High accuracy | `google/gemini-3-pro-preview` | Most capable Gemini model |
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Permission errors**: Use Browserbase (cloud) instead of local browser
-2. **Timeout errors**: Increase timeout in action options
-3. **Element not found**: Use `observe()` first to check available elements
-4. **Rate limiting**: Add delays between actions
-5. **Dynamic content**: Use `act("wait for content to load")` before extraction
+1. **Timeout errors**: Increase timeout in action options
+2. **Element not found**: Use `observe()` first to check available elements
+3. **Rate limiting**: Add delays between actions
+4. **Dynamic content**: Use `act("wait for content to load")` before extraction
+5. **Session expired**: Check `/workspace/group/browser-profile/` exists and isn't corrupted — delete it to force re-login
 
 ### Debug Mode
 
 ```typescript
 const stagehand = new Stagehand({
   env: "LOCAL",
-  verbose: 2, // Maximum debugging
-  logInferenceToFile: true // Save AI reasoning to files
+  verbose: 2,
+  logInferenceToFile: true
 });
 ```
 
@@ -487,15 +472,6 @@ const stagehand = new Stagehand({
 ```typescript
 const metrics = await stagehand.metrics;
 console.log(`Tokens used: ${metrics.totalPromptTokens + metrics.totalCompletionTokens}`);
-console.log(`Cost estimate: $${(metrics.totalPromptTokens + metrics.totalCompletionTokens) * 0.000001}`);
-```
-
-## Examples Repository
-
-Check the workspace for more examples:
-
-```bash
-ls ~/.openclaw/workspace/stagehand-examples/
 ```
 
 ## Documentation Links
@@ -504,7 +480,3 @@ ls ~/.openclaw/workspace/stagehand-examples/
 - [GitHub Repository](https://github.com/browserbase/stagehand)
 - [API Reference](https://docs.stagehand.dev/v3/api)
 - [Best Practices](https://docs.stagehand.dev/v3/guides/best-practices)
-
----
-
-This skill enables powerful browser automation with natural language commands. Use it for web scraping, form automation, testing, and any browser-based task that would be tedious to do manually.

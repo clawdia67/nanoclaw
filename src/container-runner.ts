@@ -77,6 +77,19 @@ function buildVolumeMounts(
       containerPath: '/workspace/group',
       readonly: false,
     });
+
+    // Vibe deployments: writable mounts so the agent can drop nginx site configs
+    // and launchd plists directly onto the host. Watchers in launchd pick these
+    // up and reload nginx / load the plist automatically.
+    const homeDir = process.env.HOME!;
+    const nginxSitesDir = path.join(homeDir, '.config/nginx/sites-enabled');
+    const launchAgentsDir = path.join(homeDir, 'Library/LaunchAgents');
+    if (fs.existsSync(nginxSitesDir)) {
+      mounts.push({ hostPath: nginxSitesDir, containerPath: '/mnt/nginx-sites', readonly: false });
+    }
+    if (fs.existsSync(launchAgentsDir)) {
+      mounts.push({ hostPath: launchAgentsDir, containerPath: '/mnt/launchagents', readonly: false });
+    }
   } else {
     // Other groups only get their own folder
     mounts.push({
@@ -146,18 +159,22 @@ function buildVolumeMounts(
   fs.mkdirSync(path.join(groupIpcDir, 'messages'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'tasks'), { recursive: true });
   fs.mkdirSync(path.join(groupIpcDir, 'input'), { recursive: true });
+  fs.mkdirSync(path.join(groupIpcDir, 'responses'), { recursive: true });
   mounts.push({
     hostPath: groupIpcDir,
     containerPath: '/workspace/ipc',
     readonly: false,
   });
 
-  // Copy agent-runner source into a per-group writable location so agents
+  // Sync agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.
+  // Always overwrite upstream files so groups get new tools/fixes, but
+  // preserve any extra files the agent may have added.
   const agentRunnerSrc = path.join(projectRoot, 'container', 'agent-runner', 'src');
   const groupAgentRunnerDir = path.join(DATA_DIR, 'sessions', group.folder, 'agent-runner-src');
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
+  if (fs.existsSync(agentRunnerSrc)) {
+    fs.mkdirSync(groupAgentRunnerDir, { recursive: true });
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
   }
   mounts.push({
@@ -184,7 +201,16 @@ function buildVolumeMounts(
  * Secrets are never written to disk or mounted as files.
  */
 function readSecrets(): Record<string, string> {
-  return readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  return readEnvFile([
+    'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_API_KEY',
+    'GEMINI_API_KEY',
+    'OPENAI_API_KEY',
+    'PERPLEXITY_API_KEY',
+    'TAVILY_API_KEY',
+    'FIRECRAWL_API_KEY',
+    'GH_TOKEN',
+  ]);
 }
 
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
@@ -271,7 +297,7 @@ export async function runContainerAgent(
     let stderrTruncated = false;
 
     // Pass secrets via stdin (never written to disk or mounted as files)
-    input.secrets = readSecrets();
+    input.secrets = { ...readSecrets(), NANOCLAW_GROUP_HOST_PATH: groupDir };
     logger.info({ model: input.model, groupFolder: input.groupFolder }, 'Sending input to container');
     container.stdin.write(JSON.stringify(input));
     container.stdin.end();

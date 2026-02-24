@@ -10,18 +10,41 @@ Single Node.js process that connects to WhatsApp, routes messages to Claude Agen
 
 | File | Purpose |
 |------|---------|
-| `src/index.ts` | Orchestrator: state, message loop, agent invocation |
-| `src/channels/whatsapp.ts` | WhatsApp connection, auth, send/receive |
-| `src/ipc.ts` | IPC watcher and task processing |
+| `src/index.ts` | Orchestrator: state, message loop, agent invocation, model switching, session recovery |
+| `src/channels/whatsapp.ts` | WhatsApp connection, auth, send/receive, voice transcription |
+| `src/ipc.ts` | IPC watcher, task processing, infrastructure snapshots |
 | `src/router.ts` | Message formatting and outbound routing |
-| `src/config.ts` | Trigger pattern, paths, intervals |
-| `src/container-runner.ts` | Spawns agent containers with mounts |
+| `src/config.ts` | Trigger pattern, paths, intervals, model defaults |
+| `src/container-runner.ts` | Spawns agent containers with mounts and skill sync |
 | `src/task-scheduler.ts` | Runs scheduled tasks |
+| `src/heartbeat.ts` | Health monitor: channels, container runtime, message flow (5min interval) |
+| `src/infrastructure.ts` | Nginx port scanning, tunnel cache for agent awareness |
+| `src/transcription.ts` | Voice message transcription via OpenAI Whisper |
+| `src/memory-extractor.ts` | Structured memory extraction from conversations |
 | `src/db.ts` | SQLite operations |
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
-| `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
+| `container/skills/` | Agent skills synced into containers on spawn |
 
-## Skills
+## Container Skills
+
+Skills available to agents inside containers:
+
+| Skill | Purpose |
+|-------|---------|
+| `agent-browser` | Browser automation via Stagehand |
+| `bookie` | Independent probabilistic event assessment |
+| `firecrawl` | Web scraping, search, crawl, AI extraction |
+| `gemini-image` | Image generation via Google Gemini |
+| `memory` | Long-term memory extraction and management |
+| `nginx` | Web server config, reverse proxy, SSL |
+| `pinger` | Push notifications via ntfy.sh |
+| `stagehand` | Browser automation with persistent profiles |
+| `sveltekit` | SvelteKit + Tailwind web framework reference |
+| `talpa` | Cloudflare Tunnel route management (MCP tools) |
+| `tavily` | REST API: search, extract, crawl, research |
+| `vibe` | Web app factory: scaffold, deploy, serve via nginx |
+
+## Claude Code Skills
 
 | Skill | When to Use |
 |-------|-------------|
@@ -29,6 +52,29 @@ Single Node.js process that connects to WhatsApp, routes messages to Claude Agen
 | `/customize` | Adding channels, integrations, changing behavior |
 | `/debug` | Container issues, logs, troubleshooting |
 | `/update` | Pull upstream NanoClaw changes, merge with customizations, run migrations |
+
+## Model Switching
+
+Prefix messages with shortcuts to switch models mid-chat:
+
+| Prefix | Model |
+|--------|-------|
+| `hh` | claude-haiku-4-5 |
+| `ss` | claude-sonnet-4-6 (default) |
+| `oo` | claude-opus-4-6 |
+
+## Auto-Recovery
+
+- **Stale sessions**: If the agent completes successfully but produces no text output, the session is automatically cleared and the message retried with a fresh session (prevents corrupted session loops).
+- **Heartbeat monitor**: Runs every 5 minutes, checks channel connectivity, container runtime, and message flow. Writes status to `data/heartbeat.json`. Flags stale message flow after 15 minutes of silence.
+
+## Infrastructure Awareness
+
+Agents can read `infrastructure.json` in their IPC directory to see:
+- **Nginx port allocations** scanned from `~/.config/nginx/sites-enabled/*.conf`
+- **Tunnel routes** cached from talpa/Cloudflare
+
+This prevents port conflicts when deploying new services.
 
 ## Development
 
@@ -51,6 +97,13 @@ launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # restart
 systemctl --user start nanoclaw
 systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
+```
+
+Logs:
+```bash
+tail -f logs/nanoclaw.log        # main log
+tail -f logs/nanoclaw.error.log  # errors only
+cat data/heartbeat.json          # health status
 ```
 
 ## Container Build Cache

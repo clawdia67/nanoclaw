@@ -1,5 +1,7 @@
+import { execFile as execFileCb } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { promisify } from 'util';
 
 import { CronExpressionParser } from 'cron-parser';
 
@@ -12,6 +14,7 @@ import {
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { isValidGroupFolder } from './group-folder.js';
+import { parseTalpaListOutput, updateTunnelCache } from './infrastructure.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
@@ -29,6 +32,48 @@ export interface IpcDeps {
   ) => void;
 }
 
+const execFile = promisify(execFileCb);
+
+const TALPA_BIN = '/run/current-system/sw/bin/talpa';
+const HOSTNAME_RE = /^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)*$/;
+const SERVICE_RE = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/;
+const TALPA_COMMANDS = ['dig', 'plug', 'list'] as const;
+const STALE_RESPONSE_MS = 5 * 60 * 1000; // 5 minutes
+
+function writeIpcResponse(
+  sourceGroup: string,
+  requestId: string,
+  response: { status: 'success' | 'error'; output?: string; error?: string },
+): void {
+  const responsesDir = path.join(DATA_DIR, 'ipc', sourceGroup, 'responses');
+  fs.mkdirSync(responsesDir, { recursive: true });
+
+  const filePath = path.join(responsesDir, `${requestId}.json`);
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(response, null, 2));
+  fs.renameSync(tempPath, filePath);
+}
+
+function cleanStaleResponses(ipcBaseDir: string, groupFolders: string[]): void {
+  const now = Date.now();
+  for (const group of groupFolders) {
+    const responsesDir = path.join(ipcBaseDir, group, 'responses');
+    if (!fs.existsSync(responsesDir)) continue;
+    try {
+      for (const file of fs.readdirSync(responsesDir)) {
+        if (!file.endsWith('.json')) continue;
+        const filePath = path.join(responsesDir, file);
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > STALE_RESPONSE_MS) {
+          fs.unlinkSync(filePath);
+        }
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
+  }
+}
+
 let ipcWatcherRunning = false;
 
 export function startIpcWatcher(deps: IpcDeps): void {
@@ -40,6 +85,16 @@ export function startIpcWatcher(deps: IpcDeps): void {
 
   const ipcBaseDir = path.join(DATA_DIR, 'ipc');
   fs.mkdirSync(ipcBaseDir, { recursive: true });
+
+  // Seed tunnel cache on startup
+  execFile(TALPA_BIN, ['list'], { timeout: 10_000 })
+    .then(({ stdout }) => {
+      updateTunnelCache(parseTalpaListOutput(stdout));
+      logger.info('Tunnel cache seeded on startup');
+    })
+    .catch(() => {
+      logger.debug('Could not seed tunnel cache (talpa not available)');
+    });
 
   const processIpcFiles = async () => {
     // Scan all group IPC directories (identity determined by directory)
@@ -145,6 +200,8 @@ export function startIpcWatcher(deps: IpcDeps): void {
       }
     }
 
+    cleanStaleResponses(ipcBaseDir, groupFolders);
+
     setTimeout(processIpcFiles, IPC_POLL_INTERVAL);
   };
 
@@ -170,6 +227,11 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For talpa_exec
+    requestId?: string;
+    command?: string;
+    hostname?: string;
+    service?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -380,6 +442,112 @@ export async function processTaskIpc(
         );
       }
       break;
+
+    case 'talpa_exec': {
+      if (!isMain) {
+        logger.warn({ sourceGroup }, 'Unauthorized talpa_exec attempt blocked');
+        if (data.requestId) {
+          writeIpcResponse(sourceGroup, data.requestId as string, {
+            status: 'error',
+            error: 'Only the main group can execute talpa commands',
+          });
+        }
+        break;
+      }
+
+      const requestId = data.requestId as string | undefined;
+      const command = data.command as string | undefined;
+      const hostname = data.hostname as string | undefined;
+      const service = data.service as string | undefined;
+
+      if (!requestId || !command) {
+        logger.warn({ data }, 'Invalid talpa_exec request - missing requestId or command');
+        break;
+      }
+
+      if (!TALPA_COMMANDS.includes(command as typeof TALPA_COMMANDS[number])) {
+        writeIpcResponse(sourceGroup, requestId, {
+          status: 'error',
+          error: `Invalid talpa command: ${command}. Allowed: ${TALPA_COMMANDS.join(', ')}`,
+        });
+        break;
+      }
+
+      // Build args based on command
+      const talpaArgs: string[] = [command];
+
+      if (command === 'dig') {
+        if (!hostname || !service) {
+          writeIpcResponse(sourceGroup, requestId, {
+            status: 'error',
+            error: 'dig requires hostname and service arguments',
+          });
+          break;
+        }
+        if (!HOSTNAME_RE.test(hostname)) {
+          writeIpcResponse(sourceGroup, requestId, {
+            status: 'error',
+            error: `Invalid hostname: ${hostname}`,
+          });
+          break;
+        }
+        if (!SERVICE_RE.test(service)) {
+          writeIpcResponse(sourceGroup, requestId, {
+            status: 'error',
+            error: `Invalid service URL: ${service}. Must be http(s)://localhost or 127.0.0.1`,
+          });
+          break;
+        }
+        talpaArgs.push(hostname, service);
+      } else if (command === 'plug') {
+        if (!hostname) {
+          writeIpcResponse(sourceGroup, requestId, {
+            status: 'error',
+            error: 'plug requires hostname argument',
+          });
+          break;
+        }
+        if (!HOSTNAME_RE.test(hostname)) {
+          writeIpcResponse(sourceGroup, requestId, {
+            status: 'error',
+            error: `Invalid hostname: ${hostname}`,
+          });
+          break;
+        }
+        talpaArgs.push(hostname);
+      }
+      // 'list' takes no extra args
+
+      try {
+        const { stdout: output, stderr: errOutput } = await execFile(TALPA_BIN, talpaArgs, {
+          timeout: 30_000,
+        });
+        const combined = (output + (errOutput ? `\n${errOutput}` : '')).trim();
+        logger.info({ command, hostname, sourceGroup }, 'talpa_exec completed');
+        writeIpcResponse(sourceGroup, requestId, {
+          status: 'success',
+          output: combined,
+        });
+
+        // Refresh tunnel cache after any mutation or list
+        try {
+          const listResult = command === 'list'
+            ? combined
+            : (await execFile(TALPA_BIN, ['list'], { timeout: 10_000 })).stdout;
+          updateTunnelCache(parseTalpaListOutput(listResult));
+        } catch {
+          // Non-critical — cache stays stale until next successful list
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error({ command, hostname, err }, 'talpa_exec failed');
+        writeIpcResponse(sourceGroup, requestId, {
+          status: 'error',
+          error: message,
+        });
+      }
+      break;
+    }
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');

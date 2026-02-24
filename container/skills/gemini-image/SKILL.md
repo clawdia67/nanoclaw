@@ -155,15 +155,10 @@ generate_image() {
     echo "$response" | jq -r '.candidates[0].content.parts[] | select(.inlineData) | .inlineData.data' | base64 -d > "$output_file"
     echo "✅ Image generated successfully: $output_file"
     
-    # Auto-send to Discord if requested
+    # Image is saved locally — send it back via the chat channel
     if [ "$send_discord" = "true" ]; then
-      echo "📤 Sending to Discord..."
-      openclaw message send --channel discord --target "user:404271843286188043" --message "fresh from the image generator 🎨" --media "$PWD/$output_file"
-      if [ $? -eq 0 ]; then
-        echo "✅ Sent to Discord successfully"
-      else
-        echo "❌ Failed to send to Discord"
-      fi
+      echo "📤 Image saved to: $PWD/$output_file"
+      echo "ℹ️  To send via WhatsApp, use the router to attach the file path as media."
     fi
     
     return 0

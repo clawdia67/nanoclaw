@@ -1,0 +1,42 @@
+# Firecrawl Skill
+
+Use `npx -y firecrawl-cli` to scrape, search, crawl, and extract from the web.
+`FIRECRAWL_API_KEY` is available in the gateway environment.
+
+## Commands
+
+### Scrape a URL
+```bash
+FIRECRAWL_API_KEY=$FIRECRAWL_API_KEY npx -y firecrawl-cli scrape <url> --only-main-content
+```
+Add `--format markdown,links` for links too. Add `--wait-for 3000` for JS-heavy pages.
+
+### Search the web
+```bash
+FIRECRAWL_API_KEY=$FIRECRAWL_API_KEY npx -y firecrawl-cli search "<query>" --limit 10 --pretty
+```
+Add `--scrape --scrape-formats markdown` to also scrape the results.
+
+### Map a site (discover all URLs)
+```bash
+FIRECRAWL_API_KEY=$FIRECRAWL_API_KEY npx -y firecrawl-cli map <url> --limit 100
+```
+Add `--search "keyword"` to filter, `--json` for structured output.
+
+### Crawl an entire site
+```bash
+FIRECRAWL_API_KEY=$FIRECRAWL_API_KEY npx -y firecrawl-cli crawl <url> --wait --progress --limit 50 --max-depth 3
+```
+Add `--include-paths /docs,/blog` to scope. Returns JSON with all pages.
+
+### AI Agent (natural language extraction)
+```bash
+FIRECRAWL_API_KEY=$FIRECRAWL_API_KEY npx -y firecrawl-cli agent "<prompt>" --wait
+```
+Optionally focus on URLs: `--urls https://example.com`. Use `--model spark-1-pro` for higher accuracy.
+
+## Tips
+- Always use `--only-main-content` for scraping — removes nav/footers/ads
+- Pipe to a file with `-o output.md` for large results
+- `--pretty` for readable JSON
+- Check credits: `FIRECRAWL_API_KEY=$FIRECRAWL_API_KEY npx -y firecrawl-cli --status`

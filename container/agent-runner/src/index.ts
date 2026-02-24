@@ -513,8 +513,13 @@ async function main(): Promise<void> {
   // Build SDK env: merge secrets into process.env for the SDK only.
   // Secrets never touch process.env itself, so Bash subprocesses can't see them.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // Selected secrets are also exported to process.env so CLI tools (gh, etc.) can use them.
+  const exportToProcessEnv = ['GH_TOKEN'];
   for (const [key, value] of Object.entries(containerInput.secrets || {})) {
     sdkEnv[key] = value;
+    if (exportToProcessEnv.includes(key)) {
+      process.env[key] = value;
+    }
   }
   // Set model via env var as well (SDK may prefer this over options.model)
   if (containerInput.model) {

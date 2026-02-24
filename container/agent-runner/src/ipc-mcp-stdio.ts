@@ -14,6 +14,7 @@ import { CronExpressionParser } from 'cron-parser';
 const IPC_DIR = '/workspace/ipc';
 const MESSAGES_DIR = path.join(IPC_DIR, 'messages');
 const TASKS_DIR = path.join(IPC_DIR, 'tasks');
+const RESPONSES_DIR = path.join(IPC_DIR, 'responses');
 
 // Context from environment variables (set by the agent runner)
 const chatJid = process.env.NANOCLAW_CHAT_JID!;
@@ -277,6 +278,162 @@ Use available_groups.json to find the JID for a group. The folder name should be
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
     };
+  },
+);
+
+// --- Talpa tools (main group only, executes on host via IPC) ---
+
+function requestAndWaitForResponse(
+  requestData: object,
+  timeoutMs = 60_000,
+): Promise<{ status: string; output?: string; error?: string }> {
+  const requestId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const fullData = { ...requestData, requestId };
+
+  writeIpcFile(TASKS_DIR, fullData);
+
+  const responseFile = path.join(RESPONSES_DIR, `${requestId}.json`);
+  const pollInterval = 100;
+  const deadline = Date.now() + timeoutMs;
+
+  return new Promise((resolve, reject) => {
+    const poll = () => {
+      if (Date.now() > deadline) {
+        reject(new Error('Timed out waiting for host response'));
+        return;
+      }
+      if (fs.existsSync(responseFile)) {
+        try {
+          const response = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          fs.unlinkSync(responseFile);
+          resolve(response);
+        } catch (err) {
+          reject(new Error(`Failed to parse response: ${err}`));
+        }
+        return;
+      }
+      setTimeout(poll, pollInterval);
+    };
+    poll();
+  });
+}
+
+server.tool(
+  'talpa_dig',
+  'Create a Cloudflare Tunnel route. Exposes a local service through a public hostname. Main group only.',
+  {
+    hostname: z.string().describe('Public hostname (e.g., "myapp.oio.party")'),
+    service: z.string().describe('Local service URL (e.g., "http://localhost:8081")'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can manage tunnels.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await requestAndWaitForResponse({
+        type: 'talpa_exec',
+        command: 'dig',
+        hostname: args.hostname,
+        service: args.service,
+      });
+
+      if (response.status === 'error') {
+        return {
+          content: [{ type: 'text' as const, text: `Tunnel creation failed: ${response.error}` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: response.output || `Tunnel created: ${args.hostname} → ${args.service}` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'talpa_plug',
+  'Remove a Cloudflare Tunnel route. Stops routing traffic and removes the DNS record. Main group only.',
+  {
+    hostname: z.string().describe('Hostname to remove (e.g., "myapp.oio.party")'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can manage tunnels.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await requestAndWaitForResponse({
+        type: 'talpa_exec',
+        command: 'plug',
+        hostname: args.hostname,
+      });
+
+      if (response.status === 'error') {
+        return {
+          content: [{ type: 'text' as const, text: `Tunnel removal failed: ${response.error}` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: response.output || `Tunnel removed: ${args.hostname}` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'talpa_list',
+  'List all active Cloudflare Tunnel routes. Main group only.',
+  {},
+  async () => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can manage tunnels.' }],
+        isError: true,
+      };
+    }
+
+    try {
+      const response = await requestAndWaitForResponse({
+        type: 'talpa_exec',
+        command: 'list',
+      });
+
+      if (response.status === 'error') {
+        return {
+          content: [{ type: 'text' as const, text: `Failed to list tunnels: ${response.error}` }],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [{ type: 'text' as const, text: response.output || 'No active tunnels.' }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
+        isError: true,
+      };
+    }
   },
 );
 

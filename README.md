@@ -49,13 +49,17 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 
 ## What It Supports
 
-- **WhatsApp I/O** - Message Claude from your phone
+- **WhatsApp I/O** - Message Claude from your phone, including voice message transcription
 - **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own container sandbox with only that filesystem mounted
 - **Main channel** - Your private channel (self-chat) for admin control; every other group is completely isolated
+- **Model switching** - Prefix messages with `hh` (Haiku), `ss` (Sonnet), or `oo` (Opus) to switch models mid-chat
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
+- **Heartbeat monitor** - Periodic health checks on channels, container runtime, and message flow with auto-recovery
+- **Stale session recovery** - Automatically detects and resets corrupted agent sessions
+- **Infrastructure awareness** - Agents can see nginx port allocations and tunnel routes to avoid conflicts
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
 
 ## Usage
@@ -68,12 +72,21 @@ Talk to your assistant with the trigger word (default: `@Andy`):
 @Andy every Monday at 8am, compile news on AI developments from Hacker News and TechCrunch and message me a briefing
 ```
 
+Switch models on the fly by prefixing your message:
+```
+oo build me a complex data pipeline       (uses Opus)
+hh what time is it in tokyo               (uses Haiku)
+ss refactor this function                  (uses Sonnet — default)
+```
+
 From the main channel (your self-chat), you can manage groups and tasks:
 ```
 @Andy list all scheduled tasks across groups
 @Andy pause the Monday briefing task
 @Andy join the Family Chat group
 ```
+
+Type `clear` to reset the session context and start fresh.
 
 ## Customizing
 
@@ -135,13 +148,16 @@ WhatsApp (baileys) --> SQLite --> Polling loop --> Container (Claude Agent SDK) 
 Single Node.js process. Agents execute in isolated Linux containers with mounted directories. Per-group message queue with concurrency control. IPC via filesystem.
 
 Key files:
-- `src/index.ts` - Orchestrator: state, message loop, agent invocation
-- `src/channels/whatsapp.ts` - WhatsApp connection, auth, send/receive
-- `src/ipc.ts` - IPC watcher and task processing
+- `src/index.ts` - Orchestrator: state, message loop, agent invocation, model switching, session recovery
+- `src/channels/whatsapp.ts` - WhatsApp connection, auth, send/receive, voice transcription
+- `src/ipc.ts` - IPC watcher, task processing, infrastructure snapshots
 - `src/router.ts` - Message formatting and outbound routing
 - `src/group-queue.ts` - Per-group queue with global concurrency limit
-- `src/container-runner.ts` - Spawns streaming agent containers
+- `src/container-runner.ts` - Spawns streaming agent containers with skill sync
 - `src/task-scheduler.ts` - Runs scheduled tasks
+- `src/heartbeat.ts` - System health monitor (channels, runtime, message flow)
+- `src/infrastructure.ts` - Nginx port scanning, tunnel cache for agent awareness
+- `src/transcription.ts` - Voice message transcription (OpenAI Whisper)
 - `src/db.ts` - SQLite operations (messages, groups, sessions, state)
 - `groups/*/CLAUDE.md` - Per-group memory
 
