@@ -235,6 +235,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   await channel.setTyping?.(chatJid, true);
   let hadError = false;
   let outputSentToUser = false;
+  let nullResultCount = 0;
+  let sessionClearedDuringStream = false;
+  const hadSessionOnEntry = !!sessions[group.folder];
 
   const output = await runAgent(group, prompt, chatJid, model, async (result) => {
     // Streaming output callback — called for each agent result
@@ -249,6 +252,20 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
+    } else if (result.status === 'success' && !outputSentToUser) {
+      // Null result with no prior output — possible stale session.
+      // In streaming mode, runAgent won't return until the container exits
+      // (could be 30+ min), so we must detect and recover here.
+      nullResultCount++;
+      if (nullResultCount >= 2 && hadSessionOnEntry && !sessionClearedDuringStream) {
+        logger.warn({ group: group.name, sessionId: sessions[group.folder], nullResults: nullResultCount },
+          'Streaming: repeated null results, clearing stale session and killing container');
+        sessionClearedDuringStream = true;
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        // Kill the container so runAgent returns, then retry with fresh session
+        queue.closeStdin(chatJid);
+      }
     }
 
     if (result.status === 'success') {
@@ -278,14 +295,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   }
 
   // Auto-recovery: agent completed successfully but never sent any text.
-  // This typically means the session is corrupted (SDK resumes but produces
-  // empty results). Clear the session and roll back so the next cycle
-  // retries with a fresh session. Only do this when resuming an existing
-  // session — a fresh session with no output is a different (unlikely) bug.
-  if (!outputSentToUser && sessions[group.folder]) {
+  // Covers both non-streaming (runAgent returned) and streaming (session
+  // was already cleared inside the callback above).
+  if (!outputSentToUser && !sessionClearedDuringStream && hadSessionOnEntry && sessions[group.folder]) {
     logger.warn({ group: group.name, sessionId: sessions[group.folder] }, 'Agent produced no output, clearing stale session for auto-retry');
     delete sessions[group.folder];
     deleteSession(group.folder);
+  }
+  if (!outputSentToUser && (sessionClearedDuringStream || hadSessionOnEntry)) {
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     return false;
