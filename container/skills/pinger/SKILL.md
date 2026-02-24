@@ -13,6 +13,8 @@ metadata:
 
 Send push notifications to iPhones via the Pinger relay service. Pinger is a Cloud Function that forwards JSON payloads to iOS devices through FCM/APNs.
 
+CRITICAL: Pinger is a SUPPLEMENT, not a replacement. You MUST always send your full response via normal output (WhatsApp) AND optionally send a short pinger notification. Never use pinger as the primary delivery channel. The pinger notification should be a brief alert (title + short summary), while the full response goes to WhatsApp as usual.
+
 Base URL: `https://us-central1-clawdia-pinger.cloudfunctions.net`. All endpoints accept `POST` with `Content-Type: application/json`.
 
 ## Send a notification (broadcast to all users)
