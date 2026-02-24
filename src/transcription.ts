@@ -2,6 +2,7 @@ import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { readEnvFile } from './env.js';
+import { logger } from './logger.js';
 
 interface TranscriptionConfig {
   model: string;
@@ -23,7 +24,7 @@ async function transcribeWithOpenAI(
   const apiKey = env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    console.warn('OPENAI_API_KEY not set in .env');
+    logger.warn('OPENAI_API_KEY not set in .env');
     return null;
   }
 
@@ -47,7 +48,7 @@ async function transcribeWithOpenAI(
     // When response_format is 'text', the API returns a plain string
     return transcription as unknown as string;
   } catch (err) {
-    console.error('OpenAI transcription failed:', err);
+    logger.error({ err }, 'OpenAI transcription failed');
     return null;
   }
 }
@@ -68,17 +69,17 @@ export async function transcribeAudioMessage(
       'buffer',
       {},
       {
-        logger: console as any,
+        logger: logger as any,
         reuploadRequest: sock.updateMediaMessage,
       },
     )) as Buffer;
 
     if (!buffer || buffer.length === 0) {
-      console.error('Failed to download audio message');
+      logger.error('Failed to download audio message');
       return config.fallbackMessage;
     }
 
-    console.log(`Downloaded audio message: ${buffer.length} bytes`);
+    logger.debug({ bytes: buffer.length }, 'Downloaded audio message');
 
     const transcript = await transcribeWithOpenAI(buffer, config);
 
@@ -88,7 +89,7 @@ export async function transcribeAudioMessage(
 
     return transcript.trim();
   } catch (err) {
-    console.error('Transcription error:', err);
+    logger.error({ err }, 'Transcription error');
     return config.fallbackMessage;
   }
 }
