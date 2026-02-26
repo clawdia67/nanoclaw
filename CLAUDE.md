@@ -63,10 +63,25 @@ Prefix messages with shortcuts to switch models mid-chat:
 | `ss` | claude-sonnet-4-6 (default) |
 | `oo` | claude-opus-4-6 |
 
+## Session Management
+
+Sessions are stored as JSONL files in `data/sessions/{group}/.claude/projects/-workspace-group/`. Each group gets one active session that persists across container restarts.
+
+**Session rotation**: When a session file exceeds 5MB, NanoClaw automatically:
+1. Extracts recent conversation context (last 30 message pairs) from the JSONL
+2. Saves it to `groups/{folder}/session-context.md`
+3. Clears the bloated session
+4. On next message, injects the recovered context into the fresh session prompt
+
+This prevents the SDK from spending minutes replaying/compacting massive transcripts while preserving conversational continuity. The agent's memory files (`groups/{folder}/memory/`) and conversation archives (`groups/{folder}/conversations/`) provide additional long-term context.
+
+**Manual reset**: Send `clear` to reset the session and start fresh.
+
 ## Auto-Recovery
 
 - **Stale sessions**: If the agent completes successfully but produces no text output, the session is automatically cleared and the message retried with a fresh session (prevents corrupted session loops).
 - **Heartbeat monitor**: Runs every 5 minutes, checks channel connectivity, container runtime, and message flow. Writes status to `data/heartbeat.json`. Flags stale message flow after 15 minutes of silence.
+- **IPC error feedback**: Unknown IPC task types return explicit error responses to the container agent, preventing hangs from unsupported operations.
 
 ## Infrastructure Awareness
 

@@ -58,6 +58,7 @@ Then run `/setup`. Claude Code handles everything: dependencies, authentication,
 - **Container isolation** - Agents sandboxed in Apple Container (macOS) or Docker (macOS/Linux)
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks (first personal AI assistant to support this)
 - **Heartbeat monitor** - Periodic health checks on channels, container runtime, and message flow with auto-recovery
+- **Session rotation** - Automatically rotates bloated sessions with context extraction and recovery, preventing stale compaction loops
 - **Stale session recovery** - Automatically detects and resets corrupted agent sessions
 - **Infrastructure awareness** - Agents can see nginx port allocations and tunnel routes to avoid conflicts
 - **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
@@ -128,9 +129,6 @@ Skills we'd like to see:
 
 **Platform Support**
 - `/setup-windows` - Windows via WSL2 + Docker
-
-**Session Management**
-- `/add-clear` - Add a `/clear` command that compacts the conversation (summarizes context while preserving critical information in the same session). Requires figuring out how to trigger compaction programmatically via the Claude Agent SDK.
 
 ## Requirements
 

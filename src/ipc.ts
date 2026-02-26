@@ -551,5 +551,13 @@ export async function processTaskIpc(
 
     default:
       logger.warn({ type: data.type }, 'Unknown IPC task type');
+      // Write an error response if the task included a requestId,
+      // so the agent inside the container doesn't hang forever waiting.
+      if (data.requestId) {
+        writeIpcResponse(sourceGroup, data.requestId, {
+          status: 'error',
+          error: `Unknown IPC task type: "${data.type}". Supported types: schedule_task, pause_task, resume_task, cancel_task, refresh_groups, register_group, talpa_exec`,
+        });
+      }
   }
 }

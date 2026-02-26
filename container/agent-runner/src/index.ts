@@ -366,7 +366,11 @@ async function runQuery(
   const stream = new MessageStream();
   stream.push(prompt);
 
-  // Poll IPC for follow-up messages and _close sentinel during the query
+  // Poll IPC for _close sentinel during the query.
+  // Follow-up messages are NOT piped into the active query — they accumulate
+  // in the IPC directory and are picked up by waitForIpcMessage() after the
+  // query ends. Piping messages mid-query causes the SDK to swallow them
+  // (produces empty results for every other piped message).
   let ipcPolling = true;
   let closedDuringQuery = false;
   const pollIpcDuringQuery = () => {
@@ -377,11 +381,6 @@ async function runQuery(
       stream.end();
       ipcPolling = false;
       return;
-    }
-    const messages = drainIpcInput();
-    for (const text of messages) {
-      log(`Piping IPC message into active query (${text.length} chars)`);
-      stream.push(text);
     }
     setTimeout(pollIpcDuringQuery, IPC_POLL_MS);
   };
@@ -484,6 +483,9 @@ async function runQuery(
         result: textResult || null,
         newSessionId
       });
+      // End the stream so the SDK stops waiting for more user messages.
+      // The outer loop in main() will drain IPC follow-ups and start a new query.
+      stream.end();
     }
   }
 

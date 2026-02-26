@@ -3,7 +3,9 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  DATA_DIR,
   DEFAULT_MODEL,
+  GROUPS_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
   POLL_INTERVAL,
@@ -45,6 +47,119 @@ import { startHeartbeat } from './heartbeat.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
+
+// --- Session rotation helpers ---
+
+const SESSION_CONTEXT_FILE = 'session-context.md';
+const CONTEXT_TAIL_BYTES = 200 * 1024; // Read last 200KB of JSONL for context extraction
+const MAX_CONTEXT_MESSAGES = 30; // Keep last N message pairs
+
+/**
+ * Extract recent conversation context from a JSONL session file and save it
+ * to the group directory so a fresh session can recover context.
+ */
+function extractAndSaveContext(sessionFile: string, groupFolder: string): void {
+  try {
+    const fd = fs.openSync(sessionFile, 'r');
+    const stat = fs.fstatSync(fd);
+    const readSize = Math.min(stat.size, CONTEXT_TAIL_BYTES);
+    const buffer = Buffer.alloc(readSize);
+    fs.readSync(fd, buffer, 0, readSize, stat.size - readSize);
+    fs.closeSync(fd);
+
+    const tail = buffer.toString('utf-8');
+    // Skip the first (potentially partial) line
+    const lines = tail.split('\n').slice(1);
+
+    const messages: Array<{ role: string; text: string }> = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const entry = JSON.parse(line);
+        if (entry.type === 'user' && entry.message?.content) {
+          const text = typeof entry.message.content === 'string'
+            ? entry.message.content
+            : entry.message.content
+                .filter((c: { type?: string }) => c.type === 'text' || !c.type)
+                .map((c: { text?: string }) => c.text || '')
+                .join('');
+          if (text.trim()) messages.push({ role: 'user', text: text.slice(0, 500) });
+        } else if (entry.type === 'assistant' && entry.message?.content) {
+          const textParts = entry.message.content
+            .filter((c: { type: string }) => c.type === 'text')
+            .map((c: { text: string }) => c.text);
+          const text = textParts.join('');
+          if (text.trim()) messages.push({ role: 'assistant', text: text.slice(0, 500) });
+        }
+      } catch {
+        // Skip unparseable lines
+      }
+    }
+
+    // Keep the most recent messages
+    const recent = messages.slice(-MAX_CONTEXT_MESSAGES);
+    if (recent.length === 0) return;
+
+    const contextLines = ['# Recent Conversation Context', ''];
+    for (const msg of recent) {
+      const label = msg.role === 'user' ? 'User' : 'Assistant';
+      contextLines.push(`**${label}**: ${msg.text}`, '');
+    }
+
+    const contextPath = path.join(GROUPS_DIR, groupFolder, SESSION_CONTEXT_FILE);
+    fs.writeFileSync(contextPath, contextLines.join('\n'));
+    logger.info(
+      { groupFolder, messages: recent.length },
+      'Saved session context for recovery',
+    );
+  } catch (err) {
+    logger.error({ err, groupFolder }, 'Failed to extract session context');
+  }
+}
+
+/**
+ * Load recovery context for a fresh session. Checks for:
+ * 1. session-context.md (extracted from rotated session)
+ * 2. Recent conversation archives
+ * Returns the context string or null.
+ */
+function loadRecoveryContext(groupFolder: string): string | null {
+  // Check for extracted session context
+  const contextPath = path.join(GROUPS_DIR, groupFolder, SESSION_CONTEXT_FILE);
+  if (fs.existsSync(contextPath)) {
+    try {
+      const context = fs.readFileSync(contextPath, 'utf-8');
+      // Delete after loading — it's a one-time recovery
+      fs.unlinkSync(contextPath);
+      if (context.trim()) return context;
+    } catch {
+      // Ignore read errors
+    }
+  }
+
+  // Fallback: check for recent conversation archives
+  const convDir = path.join(GROUPS_DIR, groupFolder, 'conversations');
+  if (fs.existsSync(convDir)) {
+    try {
+      const files = fs.readdirSync(convDir)
+        .filter(f => f.endsWith('.md'))
+        .sort()
+        .reverse();
+      if (files.length > 0) {
+        const latest = fs.readFileSync(path.join(convDir, files[0]), 'utf-8');
+        // Truncate to last ~4000 chars to avoid overwhelming the prompt
+        const truncated = latest.length > 4000
+          ? '...\n' + latest.slice(-4000)
+          : latest;
+        return `# Recent Conversation Archive (${files[0]})\n\n${truncated}`;
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  return null;
+}
 
 let lastTimestamp = '';
 let lastMessageReceivedAt: string | null = null;
@@ -319,7 +434,51 @@ async function runAgent(
   onOutput?: (output: ContainerOutput) => Promise<void>,
 ): Promise<'success' | 'error'> {
   const isMain = group.folder === MAIN_GROUP_FOLDER;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Guard against bloated sessions: if the JSONL file exceeds the threshold,
+  // extract recent context, then clear the session so the container starts
+  // fresh without spending minutes replaying/compacting a massive transcript.
+  const MAX_SESSION_SIZE = 5 * 1024 * 1024; // 5MB
+  if (sessionId) {
+    const sessionProjectDir = path.join(
+      DATA_DIR, 'sessions', group.folder, '.claude', 'projects',
+      '-workspace-group',
+    );
+    const sessionFile = path.join(sessionProjectDir, `${sessionId}.jsonl`);
+    try {
+      const stat = fs.statSync(sessionFile);
+      if (stat.size > MAX_SESSION_SIZE) {
+        logger.warn(
+          { group: group.name, sessionId, sizeMB: Math.round(stat.size / 1024 / 1024) },
+          'Session too large, rotating with context extraction',
+        );
+        // Extract recent context before deleting
+        extractAndSaveContext(sessionFile, group.folder);
+        // Clean up session files
+        fs.unlinkSync(sessionFile);
+        const sessionDir = path.join(sessionProjectDir, sessionId);
+        if (fs.existsSync(sessionDir)) {
+          fs.rmSync(sessionDir, { recursive: true, force: true });
+        }
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        sessionId = undefined;
+      }
+    } catch {
+      // File doesn't exist or can't stat — proceed normally
+    }
+  }
+
+  // On fresh session start, inject recovered context so the agent can
+  // pick up where it left off without losing track of active work.
+  if (!sessionId) {
+    const recoveryContext = loadRecoveryContext(group.folder);
+    if (recoveryContext) {
+      prompt = `[SESSION ROTATED — Your previous session was cleared due to size. Here is context from your recent conversation to help you continue seamlessly. Read your memory files for additional context.]\n\n${recoveryContext}\n\n---\n\n${prompt}`;
+      logger.info({ group: group.name }, 'Injected recovery context into fresh session');
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
